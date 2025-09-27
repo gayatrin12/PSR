@@ -5,7 +5,7 @@ import pymongo
 from pymongo.mongo_client import MongoClient
 from pymongo.server_api import ServerApi
 
-uri = "mongodb+srv://gayatrinikumbh816_db_user:UPX9juLsCmmrpr2I@cluster1.fvhowp4.mongodb.net/?retryWrites=true&w=majority&appName=Cluster1"
+uri = "mongodb+srv://gayatrinikumbh816_db_user:UPX9juLsCmmrpr2I@cluster1.fvhowp4.mongodb.net/myDatabase?retryWrites=true&w=majority&appName=Cluster1"
 
 # Create a new client and connect to the server
 client = MongoClient(uri, server_api=ServerApi('1'))
@@ -193,25 +193,37 @@ def customer_ui():
         st.write(f"### 💵 Total: ₹{total}")
 
         col_clear, col_order = st.columns(2)
+
         if col_clear.button("🧹 Clear Cart"):
             st.session_state.cart = {}
             st.rerun()
+
         if col_order.button("✅ Place Order"):
             now = datetime.now().strftime("%d-%m-%Y %I:%M %p")
-            st.session_state.orders.append({
+            order = {
                 "table_no": st.session_state.table_no,
                 "items": items.copy(),
                 "total": total,
                 "status": "Pending",
                 "timestamp": now,
                 "invoice_no": st.session_state.invoice_no
-            })
+            }
+
+            # ✅ Save to MongoDB
+            db = client["myDatabase"]
+            orders_collection = db["orders"]
+            result = orders_collection.insert_one(order)
+            print(f"Order inserted into DB with ID: {result.inserted_id}")
+
+            # ✅ Save in session (for display)
+            st.session_state.orders.append(order)
+
             st.session_state.invoice_no += 1
             st.session_state.cart = {}
-            st.success("🎉 Order placed!")
+            st.success("🎉 Order placed and saved to database!")
             st.rerun()
 
-    # Show past orders for this table
+    # 🧾 Show previous orders from session
     st.subheader("📝 Your Orders Status")
     has_orders = False
     for order in st.session_state.orders:
@@ -221,8 +233,8 @@ def customer_ui():
             for item in order["items"]:
                 st.write(f"- {item['title']} × {item['qty']}")
             st.write(f"**Total:** ₹{order['total']}")
-            
-            # 💡 Generate Bill if Served
+
+            # Bill generation if Served
             if order["status"] == "Served":
                 if st.button(f"🧾 Generate Bill (INV-{order['invoice_no']:04d})", key=f"bill_{order['invoice_no']}"):
                     bill_text = generate_bill_text(order)
@@ -234,8 +246,10 @@ def customer_ui():
                         mime="text/plain"
                     )
             st.markdown("---")
+
     if not has_orders:
         st.caption("No orders placed yet.")
+
 
 # -------------------------
 # Admin Login
@@ -259,41 +273,55 @@ def admin_login():
 # -------------------------
 def admin_dashboard():
     st.markdown("<h1 style='text-align: center; color:#6A1B9A;'>Admin Dashboard</h1>", unsafe_allow_html=True)
-    st.write(f"Total Orders: {len(st.session_state.orders)}")
-    
+
+    # Connect to MongoDB
+    db = client["myDatabase"]
+    orders_collection = db["orders"]
+
+    # ✅ Fetch all orders from the DB
+    all_orders = list(orders_collection.find().sort("invoice_no", pymongo.ASCENDING))
+    st.write(f"Total Orders: {len(all_orders)}")
+
+    # 🔐 Logout button
     if st.button("Logout"):
         st.session_state.is_admin = False
         st.rerun()
 
-    if not st.session_state.orders:
+    if not all_orders:
         st.info("No orders yet.")
         return
 
-    for idx, order in enumerate(st.session_state.orders):
+    for order in all_orders:
         st.markdown(f"### Invoice: INV-{order['invoice_no']:04d} | Table: {order['table_no']} | Status: {order['status']} | Time: {order['timestamp']}")
-        
+
         for item in order["items"]:
             st.write(f"- {item['title']} × {item['qty']}")
         st.write(f"**Total:** ₹{order['total']}")
 
+        # ✅ Mark as Served (update DB)
         if order["status"] == "Pending":
-            if st.button(f"✅ Mark as Served (INV-{order['invoice_no']:04d})", key=f"serve_{idx}"):
-                st.session_state.orders[idx]["status"] = "Served"
+            if st.button(f"✅ Mark as Served (INV-{order['invoice_no']:04d})", key=f"serve_{order['invoice_no']}"):
+                orders_collection.update_one(
+                    {"invoice_no": order["invoice_no"]},
+                    {"$set": {"status": "Served"}}
+                )
                 st.success(f"Order INV-{order['invoice_no']:04d} marked as Served.")
                 st.rerun()
 
+        # 🧾 Generate bill
         elif order["status"] == "Served":
-            if st.button(f"🧾 Generate Bill (INV-{order['invoice_no']:04d})", key=f"admin_bill_{idx}"):
+            if st.button(f"🧾 Generate Bill (INV-{order['invoice_no']:04d})", key=f"admin_bill_{order['invoice_no']}"):
                 bill_text = generate_bill_text(order)
-                st.text_area("Generated Bill", bill_text, height=300, key=f"bill_text_area_{idx}")
+                st.text_area("Generated Bill", bill_text, height=300, key=f"bill_text_area_{order['invoice_no']}")
                 st.download_button(
                     label="📥 Download Bill as Text",
                     data=bill_text,
                     file_name=f"invoice_{order['invoice_no']:04d}.txt",
                     mime="text/plain",
-                    key=f"admin_download_{idx}"
+                    key=f"admin_download_{order['invoice_no']}"
                 )
         st.markdown("---")
+
 
 
 # -------------------------
